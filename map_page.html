@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>부산 맛집 다이어리</title>
+    <link rel="stylesheet" type="text/css" href="map_page_style.css">
+    <script src="https://kit.fontawesome.com/73eb7670a6.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <header>
+        <h1 id="title">부산 맛집 다이어리</h1>
+        <h2 id="subtitle">나만의 부산 맛집 지도를 만들어보세요!</h2>
+    </header>
+    <div class="container">
+        <div id="menu_wrap">
+            <div id="search_wrap">
+                <div class="search">
+                    <form onsubmit="searchPlaces(); return false;">
+                        <fieldset>
+                            <input type="search" id="keyword" size="15" placeholder="검색어를 입력하세요"> 
+                            <button type="submit"><i class="fa fa-solid fa-search"></i></button> 
+                        </fieldset> 
+                    </form>
+                </div>
+            </div>
+            <ul id="placesList"></ul>
+            <div id="pagination"></div>
+        </div>
+        <div id="map"></div>
+    </div>
+
+    <script type="text/javascript" src="//dapi.kakao.com/v2/maps/sdk.js?appkey=a26f899051847bb87c59973e9aeb3a7e&libraries=services"></script>
+    <script>
+    var markers = [];
+    var fixedMarkers = [];
+    var places = [];
+    var savedPlaces = [];
+
+    var mapContainer = document.getElementById('map'),
+        mapOption = {
+            center: new kakao.maps.LatLng(35.13401495825156, 129.10315199580177),
+            level: 7
+        };
+
+    var map = new kakao.maps.Map(mapContainer, mapOption);
+
+    var zoomControl = new kakao.maps.ZoomControl();
+    map.addControl(zoomControl, kakao.maps.ControlPosition.RIGHT);
+
+    var ps = new kakao.maps.services.Places();
+
+    var infowindow = new kakao.maps.InfoWindow({zIndex:1});
+
+    loadFixedPlaces();
+    
+    window.onload = function() {
+        adjustMenuWrapHeight();
+        loadRatingsFromLocalStorage();
+    };
+    
+    window.onresize = function() {
+        adjustMenuWrapHeight();
+    };
+    
+    function adjustMenuWrapHeight() {
+        var mapHeight = document.getElementById('map').clientHeight;
+        document.getElementById('menu_wrap').style.height = mapHeight + 'px';
+    }    
+
+    function searchPlaces() {
+        var keyword = document.getElementById('keyword').value;
+
+        if (!keyword.replace(/^\s+|\s+$/g, '')) {
+            alert('키워드를 입력해주세요!');
+            return false;
+        }
+
+        var bounds = new kakao.maps.LatLngBounds(
+            new kakao.maps.LatLng(35.052664, 128.847046), 
+            new kakao.maps.LatLng(35.235073, 129.283092)  
+        );
+
+        ps.keywordSearch(keyword, placesSearchCB, { bounds: bounds, pageable: true, size: 10 });
+
+        document.getElementById('menu_wrap').classList.add('show');
+    }
+
+    function placesSearchCB(data, status, pagination) {
+        if (status === kakao.maps.services.Status.OK) {
+            var limitedData = data.slice(0, 10);
+            places = limitedData;
+            displayPlaces(limitedData);
+            displayPagination(pagination);
+        } else if (status === kakao.maps.services.Status.ZERO_RESULT) {
+            alert('검색 결과가 존재하지 않습니다.');
+            return;
+        } else if (status === kakao.maps.services.Status.ERROR) {
+            alert('검색 결과 중 오류가 발생했습니다.');
+            return;
+        }
+    }
+
+    function displayPlaces(places) {
+        var listEl = document.getElementById('placesList'),
+            menuEl = document.getElementById('search_wrap'),
+            fragment = document.createDocumentFragment(),
+            bounds = new kakao.maps.LatLngBounds(),
+            listStr = '';
+
+        removeAllChildNods(listEl);
+        removeMarker();
+
+        for (var i = 0; i < places.length; i++) {
+            var placePosition = new kakao.maps.LatLng(places[i].y, places[i].x),
+                marker = addMarker(placePosition, i),
+                itemEl = getListItem(i, places[i]);
+
+            bounds.extend(placePosition);
+
+            (function(marker, title) {
+                kakao.maps.event.addListener(marker, 'mouseover', function() {
+                    displayInfowindow(marker, title);
+                });
+                kakao.maps.event.addListener(marker, 'mouseout', function() {
+                    infowindow.close();
+                });
+                itemEl.onmouseover = function() {
+                    displayInfowindow(marker, title);
+                };
+                itemEl.onmouseout = function() {
+                    infowindow.close();
+                };
+            })(marker, places[i].place_name, places[i]);
+
+            fragment.appendChild(itemEl);
+            menuEl.scrollTop = 0;
+
+            map.setBounds(bounds);
+        }
+
+        listEl.appendChild(fragment);
+        map.setBounds(bounds);
+    }
+
+    function getListItem(index, places) {
+        var el = document.createElement('li'),
+            itemStr = '<span class="markerbg marker_' + (index + 1) + '"></span>' +
+                '<div class="info">' +
+                '   <h5>' + places.place_name + '</h5>';
+
+
+        itemStr += '    <span>' + places.road_address_name + '</span>'
+      
+        itemStr += '  <span class="tel">' + places.phone + '</span>' +
+            '  <button onclick="addPlace(' + index + ')">저장하기</button>' +
+            '</div>';
+
+        el.innerHTML = itemStr;
+        el.className = 'item';
+        return el;
+    }
+
+    function addMarker(position, idx, title) {
+        var imageSrc = 'https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/marker_number_blue.png',
+            imageSize = new kakao.maps.Size(36, 37),
+            imgOptions = {
+                spriteSize: new kakao.maps.Size(36, 691),
+                spriteOrigin: new kakao.maps.Point(0, (idx * 46) + 10),
+                offset: new kakao.maps.Point(13, 37)
+            },
+            markerImage = new kakao.maps.MarkerImage(imageSrc, imageSize, imgOptions),
+            marker = new kakao.maps.Marker({
+                position: position,
+                image: markerImage
+            });
+
+        marker.setMap(map);
+        markers.push(marker);
+        return marker;
+    }
+
+    function removeMarker() {
+        for (var i = 0; i < markers.length; i++) {
+            markers[i].setMap(null);
+        }
+        markers = [];
+    }
+
+    function displayPagination(pagination) {
+        var paginationEl = document.getElementById('pagination'),
+            fragment = document.createDocumentFragment(),
+            i;
+
+        while (paginationEl.hasChildNodes()) {
+            paginationEl.removeChild(paginationEl.lastChild);
+        }
+
+        for (i = 1; i <=  Math.min(5, pagination.last); i++) {
+            var el = document.createElement('a');
+            el.href = "#";
+            el.innerHTML = i;
+
+            if (i === pagination.current) {
+                el.className = 'on';
+            } else {
+                el.onclick = (function(i) {
+                    return function() {
+                        pagination.gotoPage(i);
+                    }
+                })(i);
+            }
+
+            fragment.appendChild(el);
+        }
+        paginationEl.appendChild(fragment);
+    }
+
+    function displayInfowindow(marker, title) {
+        var content = `
+            <div style="padding: 5px; z-index: 1; max-width: 200px; height: 30px; display: flex; align-items: center; justify-content: center; text-align: center;">
+                <div style="flex: 1; white-space: nowrap;">${title}</div>
+            </div>
+        `;
+        infowindow.setContent(content);
+        infowindow.open(map, marker);
+    }
+
+    function removeAllChildNods(el) {
+        while (el.hasChildNodes()) {
+            el.removeChild(el.lastChild);
+        }
+    }
+
+    function loadRatingsFromLocalStorage() {
+        savedPlaces.forEach(function(place) {
+            var rating = localStorage.getItem('rating-' + place.id);
+            if (rating) {
+                place.rating = parseInt(rating);
+                document.getElementById(rating + '-stars-' + place.id).checked = true;
+            }
+        });
+    }
+
+    function addPlace(index) {
+        var place = places[index];
+        savedPlaces.push(place);
+        addFixedMarker(place);
+        saveToLocalStorage();
+    }
+
+    function addFixedMarker(place) {
+        var marker = new kakao.maps.Marker({
+            map: map,
+            position: new kakao.maps.LatLng(place.y, place.x),
+            title: place.place_name,
+            zIndex: 2
+        });
+
+        fixedMarkers.push(marker);
+
+        kakao.maps.event.addListener(marker, 'click', function() {
+            displayOverlay(marker, place);
+        });
+    }
+
+    function saveToLocalStorage() {
+        localStorage.setItem('savedPlaces', JSON.stringify(savedPlaces));
+    }
+
+    function loadFixedPlaces() {
+        var storedPlaces = localStorage.getItem('savedPlaces');
+        if (storedPlaces) {
+            savedPlaces = JSON.parse(storedPlaces);
+            for (var i = 0; i < savedPlaces.length; i++) {
+                addFixedMarker(savedPlaces[i]);
+            }
+        }
+    }
+
+    var overlayMap = {};
+
+    function displayOverlay(marker, place) {
+        var title = place.place_name;
+        var content = `
+            <div class="customoverlay">
+                <div class="title">
+                    ${title}
+                    <div class="close" onclick="closeOverlay('${place.place_name}')" title="닫기"></div>
+                </div>
+                <div class="body">
+                    <div class="star-rating">
+                        <input type="radio" id="1-star-${place.id}" name="rating-${place.id}" value="1" /><label for="1-star-${place.id}" class="star">&#9733;</label>
+                        <input type="radio" id="2-stars-${place.id}" name="rating-${place.id}" value="2" /><label for="2-stars-${place.id}" class="star">&#9733;</label>
+                        <input type="radio" id="3-stars-${place.id}" name="rating-${place.id}" value="3" /><label for="3-stars-${place.id}" class="star">&#9733;</label>
+                        <input type="radio" id="4-stars-${place.id}" name="rating-${place.id}" value="4" /><label for="4-stars-${place.id}" class="star">&#9733;</label>
+                        <input type="radio" id="5-stars-${place.id}" name="rating-${place.id}" value="5" /><label for="5-stars-${place.id}" class="star">&#9733;</label>
+                    </div>
+                    <div class="review">
+                        <input type="text" id="review-input-${place.id}" placeholder="한줄평을 남겨보세요" />
+                        <button onclick="addReview('${place.id}')">등록</button>
+                    </div>
+                    <ul id="reviews-list-${place.id}"></ul>
+                    <button class="btn" onclick="removePlace('${place.place_name}')">마커 삭제하기</button>
+                </div>
+            </div>`;
+    
+        var overlay = new kakao.maps.CustomOverlay({
+            content: content,
+            map: map,
+            position: marker.getPosition()
+        });
+    
+        overlayMap[place.place_name] = overlay;
+    
+        document.querySelectorAll(`input[name="rating-${place.id}"]`).forEach(function(star) {
+            star.addEventListener('change', function() {
+                var rating = this.value;
+                place.rating = parseInt(rating);
+                localStorage.setItem(`rating-${place.id}`, rating);
+            });
+        });
+    
+        if (place.rating) {
+            document.getElementById(`${place.rating}-stars-${place.id}`).checked = true;
+        }
+    
+        loadReviews(place.id);
+        overlay.setMap(map);
+    }
+
+    function addReview(placeId) {
+        var reviewInput = document.getElementById(`review-input-${placeId}`);
+        var reviewText = reviewInput.value.trim();
+    
+        if (reviewText) {
+            var reviews = JSON.parse(localStorage.getItem(`reviews-${placeId}`)) || [];
+            reviews.push(reviewText);
+            localStorage.setItem(`reviews-${placeId}`, JSON.stringify(reviews));
+            reviewInput.value = '';
+            loadReviews(placeId);
+        }
+    }
+    
+    function loadReviews(placeId) {
+        var reviewsList = document.getElementById(`reviews-list-${placeId}`);
+        var reviews = JSON.parse(localStorage.getItem(`reviews-${placeId}`)) || [];
+    
+        reviewsList.innerHTML = '';
+        reviews.forEach((review, index) => {
+            var reviewItem = document.createElement('li');
+            reviewItem.innerHTML = `
+                <span>${review}</span>
+                <button onclick="editReview('${placeId}', ${index})">수정</button>
+                <button onclick="deleteReview('${placeId}', ${index})">삭제</button>
+            `;
+            reviewsList.appendChild(reviewItem);
+        });
+    }
+    
+    function editReview(placeId, index) {
+        var reviews = JSON.parse(localStorage.getItem(`reviews-${placeId}`));
+        var newReview = prompt("한줄평을 수정하세요", reviews[index]);
+    
+        if (newReview !== null) {
+            reviews[index] = newReview;
+            localStorage.setItem(`reviews-${placeId}`, JSON.stringify(reviews));
+            loadReviews(placeId);
+        }
+    }
+    
+    function deleteReview(placeId, index) {
+        var reviews = JSON.parse(localStorage.getItem(`reviews-${placeId}`));
+        reviews.splice(index, 1);
+        localStorage.setItem(`reviews-${placeId}`, JSON.stringify(reviews));
+        loadReviews(placeId);
+    }
+
+    function removePlace(title) {
+        savedPlaces = savedPlaces.filter(function(place) {
+            return place.place_name !== title;
+        });
+        saveToLocalStorage();
+
+        for (var i = 0; i < fixedMarkers.length; i++) {
+            var markerTitle = fixedMarkers[i].getTitle();
+            if (markerTitle === title) {
+                fixedMarkers[i].setMap(null); 
+                fixedMarkers.splice(i, 1);
+                break;
+            }
+        }
+
+        closeOverlay(title);
+
+        var index = places.findIndex(function(place) {
+            return place.place_name === title;
+        });
+        if (index !== -1) {
+            places[index].rating = undefined;
+            localStorage.removeItem('rating-' + places[index].id);
+        }
+    }
+    </script>
+</body>
+</html>
